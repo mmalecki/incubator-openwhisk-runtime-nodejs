@@ -21,29 +21,36 @@ var config = {
         'allowConcurrent': process.env.__OW_ALLOW_CONCURRENT
 };
 
-var bodyParser = require('body-parser');
-var express    = require('express');
+var http = require('http');
+var bodyParser = require('body-parser').json({ limit: "48mb" });
 
-var app = express();
+var server = http.createServer(handleRequest);
 
 
 /**
  * instantiate an object which handles REST calls from the Invoker
  */
 var service = require('./src/service').getService(config);
+var initEndpoint = wrapEndpoint(service.initCode)
+var runEndpoint = wrapEndpoint(service.runCode)
 
-app.set('port', config.port);
-app.use(bodyParser.json({ limit: "48mb" }));
+service.start(server);
 
-app.post('/init', wrapEndpoint(service.initCode));
-app.post('/run',  wrapEndpoint(service.runCode));
+function handleRequest(req, res) {
+    if (req.method !== 'POST')
+        return replyWithJson(res, 415, { error: 'Method Not Allowed' })
 
-app.use(function(err, req, res, next) {
-    console.error(err.stack);
-    res.status(500).json({ error: "Bad request." });
-  });
+    bodyParser(req, res, function () {
+        if (req.url === '/init') return initEndpoint(req, res)
+        else if (req.url === '/run') return runEndpoint(req, res);
+        else return replyWithJson(res, 404, { error: 'Not Found' })
+    });
+}
 
-service.start(app);
+function replyWithJson(res, statusCode, body) {
+    res.writeHead(statusCode, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+}
 
 /**
  * Wraps an endpoint written to return a Promise into an express endpoint,
@@ -60,13 +67,13 @@ function wrapEndpoint(ep) {
     return function (req, res) {
         try {
             ep(req).then(function (result) {
-                res.status(result.code).json(result.response);
+                replyWithJson(res, result.code, result.response)
             }).catch(function (error) {
                 if (typeof error.code === "number" && typeof error.response !== "undefined") {
-                    res.status(error.code).json(error.response);
+                    replyWithJson(res, error.code, error.response)
                 } else {
                     console.error("[wrapEndpoint]", "invalid errored promise", JSON.stringify(error));
-                    res.status(500).json({ error: "Internal error." });
+                    replyWithJson(res, 500, { error: "Internal error." });
                 }
             });
         } catch (e) {
@@ -75,7 +82,7 @@ function wrapEndpoint(ep) {
             // but, as they say, better safe than sorry.
             console.error("[wrapEndpoint]", "exception caught", e.message);
 
-            res.status(500).json({ error: "Internal error (exception)." });
+            replyWithJson(res, 500, { error: "Internal error (exception)." });
         }
     }
 }
